@@ -1,18 +1,1 @@
-# Сервер синхронизации для Roblox
-
-## Как запустить локально
-1. Установи Node.js
-2. Установи зависимости: `npm install`
-3. Запусти: `node server.js`
-4. Сервер будет доступен по адресу `http://localhost:3000`
-
-## Деплой на Render / Railway
-- Загрузи файлы (package.json, server.js, папку public)
-- Укажи команды: build = `npm install`, start = `npm start`
-- Получи публичный URL
-
-## Использование в игре
-- Вставь Lua-скрипт в экзекутор
-- Используй `!join КОД` для подключения к сессии
-- Используй `!exec КОМАНДА` для отправки команды всем
-- Код сессии можно создать на сайте `/`
+#Welcome to my repository, here I make my own version of the connection for local scripts so that they feel global.
