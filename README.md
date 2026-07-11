@@ -14,6 +14,7 @@
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/youscripts/RobloxLocalScriptSync/refs/heads/main/Lua%20Client%20Session%20Script"))()
+```
 Примечание: Убедитесь, что у вас установлен и запущен Executor, который поддерживает WebSocket-соединения.
 
 После выполнения скрипта на экране появится небольшое окно для входа в сессию.
