@@ -6,12 +6,11 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Хранилище сессий: код -> { clients: Set, createdBy: ws }
-const sessions = new Map();
-// Для каждого клиента храним его текущий код сессии (или null)
-const clientSession = new Map();
+// Хранилище
+const sessions = new Map();          // code -> { clients: Set, createdBy: ws, persist: boolean }
+const clientSession = new Map();      // ws -> code
+const clientName = new Map();         // ws -> name
 
-// Генерация случайного 5-значного кода (латиница + цифры)
 function generateCode() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let code;
@@ -26,35 +25,48 @@ function generateCode() {
     return code;
 }
 
-// Отправить сообщение клиенту
 function send(ws, data) {
-    if (ws.readyState === WebSocket.OPEN) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(data));
     }
 }
 
-// Рассылка всем в сессии (кроме отправителя)
-function broadcastToSession(code, sender, data) {
-    if (!sessions.has(code)) return;
-    const { clients } = sessions.get(code);
-    clients.forEach(client => {
-        if (client !== sender && client.readyState === WebSocket.OPEN) {
-            send(client, data);
+function broadcastMembers(code) {
+    const session = sessions.get(code);
+    if (!session) return;
+    const members = [];
+    session.clients.forEach(client => {
+        members.push({
+            name: clientName.get(client) || 'Unknown',
+            isCreator: client === session.createdBy
+        });
+    });
+    session.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            send(client, { type: 'members', members: members });
         }
     });
 }
 
-// Обработка WebSocket соединений
+function broadcastPersist(code) {
+    const session = sessions.get(code);
+    if (!session) return;
+    session.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            send(client, { type: 'persist_update', value: session.persist || false });
+        }
+    });
+}
+
 wss.on('connection', (ws) => {
     console.log('New client connected');
-    clientSession.set(ws, null); // пока не в сессии
+    clientSession.set(ws, null);
 
     ws.on('message', (message) => {
         let msg;
         try {
             msg = JSON.parse(message);
         } catch (e) {
-            console.log('Invalid JSON:', message);
             send(ws, { type: 'error', message: 'Invalid JSON' });
             return;
         }
@@ -62,8 +74,13 @@ wss.on('connection', (ws) => {
         const currentCode = clientSession.get(ws);
 
         switch (msg.type) {
+            case 'identify': {
+                const name = msg.name || 'Player';
+                clientName.set(ws, name);
+                console.log(`Client identified as ${name}`);
+                break;
+            }
             case 'create': {
-                // Проверяем, не в сессии ли уже
                 if (currentCode) {
                     send(ws, { type: 'error', message: 'Session already exists', code: 'ERROR_3' });
                     return;
@@ -73,11 +90,11 @@ wss.on('connection', (ws) => {
                     send(ws, { type: 'error', message: 'Could not generate unique code' });
                     return;
                 }
-                // Создаем сессию
-                sessions.set(code, { clients: new Set([ws]), createdBy: ws });
+                sessions.set(code, { clients: new Set([ws]), createdBy: ws, persist: false });
                 clientSession.set(ws, code);
                 send(ws, { type: 'created', code: code });
-                console.log(`Session ${code} created`);
+                console.log(`Session ${code} created by ${clientName.get(ws) || 'Unknown'}`);
+                broadcastMembers(code);
                 break;
             }
             case 'join': {
@@ -94,12 +111,34 @@ wss.on('connection', (ws) => {
                     send(ws, { type: 'error', message: 'Session not found' });
                     return;
                 }
-                // Добавляем клиента в сессию
                 const session = sessions.get(code);
                 session.clients.add(ws);
                 clientSession.set(ws, code);
                 send(ws, { type: 'joined', code: code });
-                console.log(`Client joined ${code}`);
+                console.log(`${clientName.get(ws) || 'Unknown'} joined ${code}`);
+                broadcastMembers(code);
+                // Отправить текущий статус persist
+                send(ws, { type: 'persist_update', value: session.persist || false });
+                break;
+            }
+            case 'set_persist': {
+                if (!currentCode) {
+                    send(ws, { type: 'error', message: 'Not in a session' });
+                    return;
+                }
+                const session = sessions.get(currentCode);
+                if (!session) {
+                    send(ws, { type: 'error', message: 'Session not found' });
+                    return;
+                }
+                if (session.createdBy !== ws) {
+                    send(ws, { type: 'error', message: 'Only creator can change persist mode' });
+                    return;
+                }
+                const value = msg.value === true; // приводим к булевому
+                session.persist = value;
+                console.log(`Session ${currentCode} persist mode set to ${value}`);
+                broadcastPersist(currentCode);
                 break;
             }
             case 'exec': {
@@ -112,22 +151,20 @@ wss.on('connection', (ws) => {
                     send(ws, { type: 'error', message: 'Not in a session' });
                     return;
                 }
-                // Рассылаем скрипт всем в сессии (кроме отправителя)
-                broadcastToSession(currentCode, ws, { type: 'exec', script: script });
-                // Также отправим подтверждение отправителю
-                send(ws, { type: 'exec_sent', message: 'Script sent to others' });
+                const session = sessions.get(currentCode);
+                if (session) {
+                    session.clients.forEach(client => {
+                        if (client.readyState === WebSocket.OPEN) {
+                            send(client, { type: 'exec', script: script });
+                        }
+                    });
+                }
+                send(ws, { type: 'exec_sent', message: 'Script sent to everyone' });
                 break;
             }
             case 'output': {
-                // Клиент отправляет результат выполнения скрипта
                 const output = msg.message;
-                if (!output) return;
-                if (!currentCode) return;
-                // Рассылаем вывод всем в сессии (включая отправителя? Обычно да, чтобы все видели)
-                // Но отправитель уже знает, поэтому можно рассылать всем, включая себя.
-                // Чтобы не дублировать, можно отправить всем, кроме себя, но тогда отправитель не увидит свой вывод.
-                // По условию: "если принт то он выводит им в окно" - значит, вывод должен быть у всех, включая отправителя.
-                // Поэтому рассылаем всем, включая отправителя.
+                if (!output || !currentCode) return;
                 const session = sessions.get(currentCode);
                 if (!session) return;
                 session.clients.forEach(client => {
@@ -138,15 +175,15 @@ wss.on('connection', (ws) => {
                 break;
             }
             case 'leave': {
-                // Выход из сессии
                 if (currentCode) {
                     const session = sessions.get(currentCode);
                     if (session) {
                         session.clients.delete(ws);
-                        // Если клиентов не осталось, удаляем сессию
                         if (session.clients.size === 0) {
                             sessions.delete(currentCode);
-                            console.log(`Session ${currentCode} closed`);
+                            console.log(`Session ${currentCode} closed (empty)`);
+                        } else {
+                            broadcastMembers(currentCode);
                         }
                     }
                     clientSession.set(ws, null);
@@ -154,8 +191,31 @@ wss.on('connection', (ws) => {
                 }
                 break;
             }
+            case 'close': {
+                if (!currentCode) {
+                    send(ws, { type: 'error', message: 'Not in a session' });
+                    return;
+                }
+                const session = sessions.get(currentCode);
+                if (!session) {
+                    send(ws, { type: 'error', message: 'Session not found' });
+                    return;
+                }
+                if (session.createdBy !== ws) {
+                    send(ws, { type: 'error', message: 'Only creator can close session' });
+                    return;
+                }
+                session.clients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        send(client, { type: 'session_closed', message: 'Session closed by creator' });
+                    }
+                    clientSession.delete(client);
+                });
+                sessions.delete(currentCode);
+                console.log(`Session ${currentCode} closed by creator`);
+                break;
+            }
             case 'list': {
-                // Отправить список сессий с количеством участников
                 const list = [];
                 sessions.forEach((session, code) => {
                     list.push({ code: code, count: session.clients.size });
@@ -169,7 +229,6 @@ wss.on('connection', (ws) => {
     });
 
     ws.on('close', () => {
-        // Удаляем клиента из сессии при разрыве
         const code = clientSession.get(ws);
         if (code) {
             const session = sessions.get(code);
@@ -177,11 +236,14 @@ wss.on('connection', (ws) => {
                 session.clients.delete(ws);
                 if (session.clients.size === 0) {
                     sessions.delete(code);
-                    console.log(`Session ${code} closed due to client disconnect`);
+                    console.log(`Session ${code} closed (client disconnect)`);
+                } else {
+                    broadcastMembers(code);
                 }
             }
             clientSession.delete(ws);
         }
+        clientName.delete(ws);
     });
 });
 
