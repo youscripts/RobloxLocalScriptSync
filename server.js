@@ -6,8 +6,7 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Хранилище
-const sessions = new Map();          // code -> { clients: Set, createdBy: ws, persist: boolean }
+const sessions = new Map();          // code -> { clients: Set, createdBy: ws }
 const clientSession = new Map();      // ws -> code
 const clientName = new Map();         // ws -> name
 
@@ -48,16 +47,6 @@ function broadcastMembers(code) {
     });
 }
 
-function broadcastPersist(code) {
-    const session = sessions.get(code);
-    if (!session) return;
-    session.clients.forEach(client => {
-        if (client.readyState === WebSocket.OPEN) {
-            send(client, { type: 'persist_update', value: session.persist || false });
-        }
-    });
-}
-
 wss.on('connection', (ws) => {
     console.log('New client connected');
     clientSession.set(ws, null);
@@ -90,7 +79,7 @@ wss.on('connection', (ws) => {
                     send(ws, { type: 'error', message: 'Could not generate unique code' });
                     return;
                 }
-                sessions.set(code, { clients: new Set([ws]), createdBy: ws, persist: false });
+                sessions.set(code, { clients: new Set([ws]), createdBy: ws });
                 clientSession.set(ws, code);
                 send(ws, { type: 'created', code: code });
                 console.log(`Session ${code} created by ${clientName.get(ws) || 'Unknown'}`);
@@ -117,28 +106,6 @@ wss.on('connection', (ws) => {
                 send(ws, { type: 'joined', code: code });
                 console.log(`${clientName.get(ws) || 'Unknown'} joined ${code}`);
                 broadcastMembers(code);
-                // Отправить текущий статус persist
-                send(ws, { type: 'persist_update', value: session.persist || false });
-                break;
-            }
-            case 'set_persist': {
-                if (!currentCode) {
-                    send(ws, { type: 'error', message: 'Not in a session' });
-                    return;
-                }
-                const session = sessions.get(currentCode);
-                if (!session) {
-                    send(ws, { type: 'error', message: 'Session not found' });
-                    return;
-                }
-                if (session.createdBy !== ws) {
-                    send(ws, { type: 'error', message: 'Only creator can change persist mode' });
-                    return;
-                }
-                const value = msg.value === true; // приводим к булевому
-                session.persist = value;
-                console.log(`Session ${currentCode} persist mode set to ${value}`);
-                broadcastPersist(currentCode);
                 break;
             }
             case 'exec': {
@@ -153,9 +120,11 @@ wss.on('connection', (ws) => {
                 }
                 const session = sessions.get(currentCode);
                 if (session) {
+                    // Генерируем серверный рандом от 0 до 100
+                    const serverRandom = Math.floor(Math.random() * 101);
                     session.clients.forEach(client => {
                         if (client.readyState === WebSocket.OPEN) {
-                            send(client, { type: 'exec', script: script });
+                            send(client, { type: 'exec', script: script, serverRandom: serverRandom });
                         }
                     });
                 }
@@ -248,7 +217,7 @@ wss.on('connection', (ws) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Roblox Session Sync Server is running');
+    res.send('Session Sync Server is running');
 });
 
 const PORT = process.env.PORT || 10000;
