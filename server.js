@@ -10,6 +10,12 @@ const sessions = new Map();
 const clientSession = new Map();
 const clientName = new Map();
 
+// ================================================================
+// НАСТРОЙКИ РАНДОМА
+// ================================================================
+const RANDOM_MAX = 2;  // ← МЕНЯЙ ЗДЕСЬ (0..RANDOM_MAX)
+// ================================================================
+
 function generateCode() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let code;
@@ -120,7 +126,7 @@ wss.on('connection', (ws) => {
                 }
                 const session = sessions.get(currentCode);
                 if (session) {
-                    const serverRandom = Math.floor(Math.random() * 101);
+                    const serverRandom = Math.floor(Math.random() * (RANDOM_MAX + 1));
                     session.clients.forEach(client => {
                         if (client.readyState === WebSocket.OPEN) {
                             send(client, { type: 'exec', script: script, serverRandom: serverRandom });
@@ -140,7 +146,7 @@ wss.on('connection', (ws) => {
                     send(ws, { type: 'error', message: 'Session not found' });
                     return;
                 }
-                const randomNumber = Math.floor(Math.random() * 101);
+                const randomNumber = Math.floor(Math.random() * (RANDOM_MAX + 1));
                 session.clients.forEach(client => {
                     if (client.readyState === WebSocket.OPEN) {
                         send(client, { type: 'random', value: randomNumber });
