@@ -6,9 +6,9 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-const sessions = new Map();          // code -> { clients: Set, createdBy: ws }
-const clientSession = new Map();      // ws -> code
-const clientName = new Map();         // ws -> name
+const sessions = new Map();
+const clientSession = new Map();
+const clientName = new Map();
 
 function generateCode() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -120,7 +120,6 @@ wss.on('connection', (ws) => {
                 }
                 const session = sessions.get(currentCode);
                 if (session) {
-                    // Генерируем серверный рандом от 0 до 100
                     const serverRandom = Math.floor(Math.random() * 101);
                     session.clients.forEach(client => {
                         if (client.readyState === WebSocket.OPEN) {
@@ -129,6 +128,24 @@ wss.on('connection', (ws) => {
                     });
                 }
                 send(ws, { type: 'exec_sent', message: 'Script sent to everyone' });
+                break;
+            }
+            case 'random': {
+                if (!currentCode) {
+                    send(ws, { type: 'error', message: 'Not in a session' });
+                    return;
+                }
+                const session = sessions.get(currentCode);
+                if (!session) {
+                    send(ws, { type: 'error', message: 'Session not found' });
+                    return;
+                }
+                const randomNumber = Math.floor(Math.random() * 101);
+                session.clients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        send(client, { type: 'random', value: randomNumber });
+                    }
+                });
                 break;
             }
             case 'output': {
